@@ -1,23 +1,57 @@
 import json
+import os
 from typing import Dict, List
 
 from .vector_store import load_vector_store
 from .graph_service import GraphQueryService
 from .reranker import rerank_context
 
-def retrieve_text_context(query: str, k: int = 5):
-    """通过向量相似度进行检索"""
+# 项目根目录下的原著名册索引 (人物名录, 供图谱检索做实体匹配)
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_NAME_INDEX_PATH = os.path.join(_PROJECT_ROOT, "data", "graph", "name_index.json")
+
+_FALLBACK_PERSONS = ["范闲", "庆帝", "叶轻眉", "五竹", "陈萍萍", "范建"]
+_person_names_cache: List[Dict] = None
+
+
+def _load_character_names() -> List[Dict]:
+    """从 name_index.json 加载全部人物名录 (绝对路径, 只加载一次)。"""
+    global _person_names_cache
+    if _person_names_cache is not None:
+        return _person_names_cache
+    try:
+        with open(_NAME_INDEX_PATH, "r", encoding="utf-8") as f:
+            entries = json.load(f).get("entries", [])
+        _person_names_cache = [
+            {"name": e["name"], "type": e.get("type", "Character")}
+            for e in entries if e.get("name")
+        ]
+    except Exception as e:
+        print(f"[Retriever] name_index 加载失败, 使用内置人物表: {e}")
+        _person_names_cache = [{"name": n, "type": "Character"} for n in _FALLBACK_PERSONS]
+    return _person_names_cache
+
+
+def retrieve_text_context(query: str, k: int = 8) -> List[Dict]:
+    """通过向量相似度进行检索, 返回带卷章元数据的结构化上下文"""
     db = load_vector_store()
     docs = db.similarity_search(query, k=k)
 
     results = []
-
     for doc in docs:
-        results.append(
-            f"【卷名】{doc.metadata.get('volume')}"
-            f"【章节】{doc.metadata.get('chapter_title')}"
-            f"【内容】{doc.page_content[:]}"
-        )
+        meta = doc.metadata or {}
+        results.append({
+            "content": (
+                f"【卷名】{meta.get('volume', '')}"
+                f"【章节】{meta.get('chapter_title', '')}"
+                f"【内容】{doc.page_content}"
+            ),
+            "source": "vector_db",
+            "retriever_type": "vector",
+            "volume": meta.get("volume", ""),
+            "chapter_title": meta.get("chapter_title", ""),
+            "chapter_index": meta.get("chapter_index"),
+        })
     return results
 
 def retrieve_graph_context(person_name: str, graph_service: GraphQueryService):
@@ -28,7 +62,7 @@ def merge_retrievers(question: str, graph_service: GraphQueryService):
     """
     整合向量检索和图谱检索，统一格式，准备送入 Rerank
 
-    输出格式统一为: [{"content": "...", "source": "...", "type": "vector|graph"}, ...]
+    输出格式统一为: [{"content": "...", "source": "...", "retriever_type": "vector|graph"}, ...]
     """
     print(f"\n{'='*60}")
     print(f"【问题】{question}")
@@ -41,11 +75,7 @@ def merge_retrievers(question: str, graph_service: GraphQueryService):
     try:
         text_results = retrieve_text_context(question, k=8)
         for r in text_results:
-            all_contexts.append({
-                "content":r,
-                "source": "vector_db",
-                "retriever_type": "vector"
-            })
+            all_contexts.append(r)
         print(f"召回 {len(text_results)} 条")
 
     except Exception as e:
@@ -53,26 +83,25 @@ def merge_retrievers(question: str, graph_service: GraphQueryService):
 
     # ---------- 2. 图谱检索 ----------
     print(">> 图谱检索 (Neo4j)...", end=" ")
-    # 从 question 中提取人物名（简单匹配，后续可换 NER）
-    # 从 entity.json 加载所有人物名
-    try:
-        with open("./data/graph/entity.json", "r", encoding="utf-8") as f:
-            eneities = json.load(f)
-        person_names = [e for e in eneities if e["type"]=="Character"]
-    except:
-        person_names = ["范闲", "庆帝", "叶轻眉", "五竹", "陈萍萍", "范建"]
+    entities = _load_character_names()
+    found_persons = [e["name"] for e in entities if e["name"] in question]
 
-    found_persons = [name for name in person_names if name in question]
     if found_persons:
+        recalled = 0
         for person_name in found_persons:
-            graph_results = graph_service.query_graph_context(person_name)
+            try:
+                graph_results = graph_service.query_graph_context(person_name)
+            except Exception as e:
+                print(f"\n   [警告] 图谱查询失败({person_name}): {e}")
+                continue
             for r in graph_results:
                 all_contexts.append({
                     "content": r,
                     "source": f"neo4j:{person_name}",
                     "retriever_type": "graph"
                 })
-        print(f"召回 {len(found_persons)} 个人物: {found_persons}")
+                recalled += 1
+        print(f"命中 {len(found_persons)} 个人物 {found_persons}, 召回 {recalled} 条")
     else:
         print("未检测到人物名")
 

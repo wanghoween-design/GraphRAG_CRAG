@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>余年卷册 · GraphRAG 关系图谱与智能考据助手</title>
+  
+  <!-- 引入 Google 中文字体与西文古典衬线字体 -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Serif+SC:wght@300;400;600;700;900&family=Cinzel:wght@600;800&display=swap" rel="stylesheet">
+  
+  <!-- 样式文件 -->
+  <link rel="stylesheet" href="/static/css/style.css?v=9">
+</head>
+<body class="ink-theme">
+  <!-- 柔和环境光晕与背景纹理 -->
+  <div class="ambient-glow glow-top-left"></div>
+  <div class="ambient-glow glow-bottom-right"></div>
+  <div class="mist-overlay"></div>
+
+  <!-- 页面顶部导航栏 -->
+  <header class="app-header">
+    <div class="header-brand">
+      <div class="seal-stamp" title="庆余全鉴">余年<br>考据</div>
+      <div class="brand-text">
+        <h1 class="brand-title">《庆余年》卷帙秘档 <span class="badge-gold">GraphRAG · CRAG</span></h1>
+        <p class="brand-subtitle">小说人物关系知识图谱推演与纠错增强生成智能助手</p>
+      </div>
+    </div>
+
+    <!-- 顶部状态指示灯与指标 -->
+    <div class="header-status">
+      <div class="status-chip" id="neo4j-chip" title="图数据库状态">
+        <span class="pulse-dot amber"></span>
+        <span class="chip-text">图谱服务连接中… (<span id="stat-nodes">--</span> 实体 / <span id="stat-links">--</span> 纽带)</span>
+      </div>
+      <div class="status-chip" id="crag-chip" title="CRAG 闭环引擎状态">
+        <span class="pulse-dot amber"></span>
+        <span class="chip-text">CRAG 引擎探测中…</span>
+      </div>
+      <div class="status-chip" title="原著全卷切片">
+        <span class="chip-text">📜 全书 719 章 · 6,292 知识切片</span>
+      </div>
+    </div>
+
+    <!-- 视图切换与工具 -->
+    <div class="header-actions">
+      <div class="view-switcher" role="group">
+        <button class="view-btn active" id="btn-view-split" title="双重视角：图谱与问答并重">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="8" height="18" rx="2"></rect><rect x="13" y="3" width="8" height="18" rx="2"></rect></svg>
+          分屏推演
+        </button>
+        <button class="view-btn" id="btn-view-graph" title="全屏图谱视角">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><path d="M6 9l6 3 6-3"></path></svg>
+          全景谱图
+        </button>
+        <button class="view-btn" id="btn-view-chat" title="全屏考据问答">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+          专注文答
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 主工作台：分栏式交互区 -->
+  <main class="workspace-container" id="workspace">
+    
+    <!-- 左侧区域：交互式 SVG 关系图谱舞台 -->
+    <section class="stage-section graph-stage" id="graph-stage">
+      
+      <!-- 图谱顶部悬浮工具条：双层控制 (检索+密度+阵营) -->
+      <div class="graph-topbar">
+        <div class="topbar-row-primary">
+          <div class="search-box">
+            <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            <input type="text" id="character-search" placeholder="在图谱中寻觅人物/势力 (如: 范闲, 五竹, 庆帝, 监察院)..." autocomplete="off">
+            <button id="search-clear-btn" class="search-clear" style="display: none;">&times;</button>
+          </div>
+
+          <!-- 呈现模式切换器 -->
+          <div class="density-switch" role="group">
+            <button class="density-btn active" id="btn-density-core" title="仅展示核心主角与高关联人物，清雅开阔">
+              🌟 宗师核心
+            </button>
+            <button class="density-btn" id="btn-density-all" title="展开原著全量人物与势力，探索宏大脉络">
+              🌌 原著全景
+            </button>
+          </div>
+
+          <!-- 连线文字显隐控制 -->
+          <button class="density-btn" id="btn-toggle-labels" title="点击切换：悬浮聚焦时显现文字 / 常驻显示全部关系标签">
+            🏷️ 智能聚焦铭文
+          </button>
+        </div>
+
+        <!-- 阵营分类筛选药丸 -->
+        <div class="faction-tabs" id="faction-tabs">
+          <button class="tab-chip active" data-faction="all">全卷诸派</button>
+          <button class="tab-chip" data-faction="fan_manor">范府世家</button>
+          <button class="tab-chip" data-faction="imperial">南庆皇廷</button>
+          <button class="tab-chip" data-faction="council">监察暗网</button>
+          <button class="tab-chip" data-faction="grandmaster">世外宗师与神庙</button>
+          <button class="tab-chip" data-faction="beiqi_romance">红颜与江湖</button>
+          <button class="tab-chip" data-faction="places_org">名城重镇</button>
+        </div>
+      </div>
+
+      <!-- SVG 图谱主容器 -->
+      <div class="svg-canvas-wrapper" id="canvas-wrapper">
+        <svg id="novel-graph-svg" width="100%" height="100%">
+          <defs>
+            <!-- 关系箭头定义 -->
+            <marker id="arrow-default" viewBox="0 0 12 12" refX="28" refY="6" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 1 L 10 6 L 0 11 z" fill="#64748b" opacity="0.8"/>
+            </marker>
+            <marker id="arrow-gold" viewBox="0 0 12 12" refX="28" refY="6" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 1 L 10 6 L 0 11 z" fill="#f59e0b"/>
+            </marker>
+            <marker id="arrow-crimson" viewBox="0 0 12 12" refX="28" refY="6" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 1 L 10 6 L 0 11 z" fill="#ef4444"/>
+            </marker>
+            <marker id="arrow-jade" viewBox="0 0 12 12" refX="28" refY="6" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 1 L 10 6 L 0 11 z" fill="#10b981"/>
+            </marker>
+            <marker id="arrow-cyan" viewBox="0 0 12 12" refX="28" refY="6" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 1 L 10 6 L 0 11 z" fill="#06b6d4"/>
+            </marker>
+            <marker id="arrow-purple" viewBox="0 0 12 12" refX="28" refY="6" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 1 L 10 6 L 0 11 z" fill="#8b5cf6"/>
+            </marker>
+
+            <!-- 节点金辉与墨韵滤镜 -->
+            <filter id="node-glow" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/>
+              <feMerge>
+                <feMergeNode in="blur"/>
+                <feMergeNode in="SourceGraphic"/>
+              </feMerge>
+            </filter>
+            
+            <filter id="selected-halo" x="-80%" y="-80%" width="260%" height="260%">
+              <feGaussianBlur in="SourceGraphic" stdDeviation="8" result="blur"/>
+              <feMerge>
+                <feMergeNode in="blur"/>
+                <feMergeNode in="SourceGraphic"/>
+              </feMerge>
+            </filter>
+
+            <!-- 宣纸水墨底纹渐变 -->
+            <radialGradient id="graph-bg-radial" cx="50%" cy="50%" r="70%">
+              <stop offset="0%" stop-color="#141c2c" stop-opacity="0.8"/>
+              <stop offset="60%" stop-color="#0b101b" stop-opacity="0.95"/>
+              <stop offset="100%" stop-color="#070a12" stop-opacity="1"/>
+            </radialGradient>
+          </defs>
+
+          <!-- 画布背景矩形 -->
+          <rect width="100%" height="100%" fill="url(#graph-bg-radial)"/>
+
+          <!-- 缩放拖拽主视口容器 -->
+          <g id="viewport">
+            <!-- 关系连线层 -->
+            <g id="links-group"></g>
+            <!-- 关系文字标签层 -->
+            <g id="labels-group"></g>
+            <!-- 实体节点层 -->
+            <g id="nodes-group"></g>
+          </g>
+        </svg>
+
+        <!-- 悬浮提示框 (Tooltip) -->
+        <div class="graph-tooltip" id="graph-tooltip"></div>
+
+        <!-- 画布浮动控制把手 (左下角) -->
+        <div class="canvas-controls">
+          <button class="ctrl-btn" id="ctrl-zoom-in" title="放大画布 (或滚动滚轮)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          </button>
+          <button class="ctrl-btn" id="ctrl-zoom-out" title="缩小画布">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          </button>
+          <button class="ctrl-btn" id="ctrl-reset-view" title="居中还原视角">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg>
+          </button>
+          <button class="ctrl-btn" id="ctrl-toggle-sim" title="暂停/开启节点物理引力">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+          </button>
+        </div>
+
+        <!-- 画布右上角图例 (Legend) -->
+        <div class="canvas-legend">
+          <div class="legend-header">势力印记</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #f59e0b;"></span> 范府世家</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #ef4444;"></span> 南庆皇廷</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #8b5cf6;"></span> 监察暗网</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #10b981;"></span> 宗师/神庙</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #06b6d4;"></span> 红颜/江湖</div>
+          <div class="legend-tip">💡 拖动节点可移位，点击可启阅人物秘卷</div>
+        </div>
+
+        <!-- 人物秘档滑动卷轴卡片 (Character Dossier) -->
+        <div class="character-dossier-drawer" id="character-dossier">
+          <button class="dossier-close" id="dossier-close-btn">&times;</button>
+          <div class="dossier-inner">
+            <div class="dossier-header">
+              <div class="dossier-avatar" id="dossier-avatar">闲</div>
+              <div class="dossier-titles">
+                <div class="dossier-name-row">
+                  <h3 class="dossier-name" id="dossier-name">范闲</h3>
+                  <span class="dossier-badge" id="dossier-badge">范府世家</span>
+                </div>
+                <div class="dossier-role" id="dossier-role">监察院提司 · 内库执掌 · 穿越天脉者</div>
+                <div class="dossier-aliases" id="dossier-aliases">别称：范慎、安之、小范大人、诗仙</div>
+              </div>
+            </div>
+
+            <!-- 人物原著传记 -->
+            <div class="dossier-body">
+              <div class="dossier-section-title">人物列传与生平考据</div>
+              <p class="dossier-summary" id="dossier-summary">加载中...</p>
+
+              <!-- 原著经典谶语与名言 -->
+              <div class="dossier-section-title">原著谶言与名录</div>
+              <blockquote class="dossier-quote" id="dossier-quote">“我这辈子就想做个富贵闲人，可你们偏偏逼我掌权杀人。”</blockquote>
+
+              <!-- 直接关联人物矩阵 -->
+              <div class="dossier-section-title">核心纽带与因果网 (<span id="dossier-rel-count">0</span>)</div>
+              <div class="dossier-relations-grid" id="dossier-relations"></div>
+
+              <!-- 快捷向 AI 提问 -->
+              <div class="dossier-section-title">考据锦囊 · 一键探询</div>
+              <div class="dossier-suggested-list" id="dossier-suggested-prompts"></div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- 右侧区域：智言考据阁 (Agent Chat Assistant) -->
+    <section class="stage-section chat-stage" id="chat-stage">
+      
+      <!-- 问答控制台头部 -->
+      <div class="chat-header">
+        <div class="chat-header-info">
+          <div class="chat-title-row">
+            <span class="chat-icon">📖</span>
+            <h2 class="chat-title">智言考据阁</h2>
+            <span class="badge-crag">CRAG 闭环推演</span>
+          </div>
+          <p class="chat-subtitle">基于 Neo4j 知识图谱与全卷篇章双路召回的智能问答</p>
+        </div>
+        <button class="chat-clear-btn" id="clear-chat-btn" title="清空对话记录">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+          重新论道
+        </button>
+      </div>
+
+      <!-- 快捷提问手卷 (猜你会问) -->
+      <div class="preset-scroll-area">
+        <div class="preset-header">💡 猜你会问 · 一点直答：</div>
+        <div class="preset-chips-wrap">
+          <button class="preset-chip" data-prompt="范闲的母亲是谁？">
+            👩 范闲的母亲是谁？
+          </button>
+          <button class="preset-chip" data-prompt="范闲的父亲是谁？">
+            👨 范闲的父亲是谁？
+          </button>
+          <button class="preset-chip" data-prompt="范闲的妻子是谁？">
+            💍 范闲的妻子是谁？
+          </button>
+          <button class="preset-chip" data-prompt="五竹效忠谁？">
+            🖤 五竹效忠谁？
+          </button>
+          <button class="preset-chip" data-prompt="陈萍萍效忠谁？">
+            🦅 陈萍萍效忠谁？
+          </button>
+          <button class="preset-chip" data-prompt="监察院由谁执掌？">
+            🗡️ 监察院由谁执掌？
+          </button>
+          <button class="preset-chip" data-prompt="谁守护范闲？">
+            🛡️ 谁守护范闲？
+          </button>
+          <button class="preset-chip" data-prompt="范闲的恩师是谁？">
+            📖 范闲的恩师是谁？
+          </button>
+          <button class="preset-chip" data-prompt="范闲身世与太平别院血案全考（深度考据）">
+            🏯 深度考据 · 范闲身世之谜
+          </button>
+          <button class="preset-chip" data-prompt="五竹为什么一直戴着黑布眼罩？他的真实身份是什么？">
+            🕶️ 深度考据 · 五竹蒙眼之谜
+          </button>
+        </div>
+      </div>
+
+      <!-- 消息对话滚动区 -->
+      <div class="chat-messages-container" id="chat-messages">
+        <!-- 初始欢迎卡片 -->
+        <div class="chat-message-row agent-row">
+          <div class="message-avatar">阁</div>
+          <div class="message-bubble-wrapper">
+            <div class="message-sender">考据掌阁学士 · CRAG Agent</div>
+            <div class="message-bubble agent-bubble">
+              <div class="welcome-box">
+                <div class="welcome-header">
+                  <div class="seal-stamp mini">余年</div>
+                  <h4>尊客请了，余年卷帙已为您开卷。</h4>
+                </div>
+                <p>本阁收录猫腻原著《庆余年》全七卷原典、经清洗归纳的五十位核心人物与数百重复杂权谋脉络。依托 <strong>Neo4j 知识图谱</strong> 与 <strong>CRAG（校正增强检索生成）</strong> 闭环引擎：</p>
+                <div class="welcome-features">
+                  <div class="feat-item"><span class="feat-icon">🕸️</span> <strong>图谱联结</strong>：可于左侧随时拖动、缩放或点击任意人物节点探查因果。</div>
+                  <div class="feat-item"><span class="feat-icon">⚖️</span> <strong>CRAG 反思</strong>：每一问均展现【意图消解 → 图谱召回 → 章节切片 → 置信度评估 → 考据生成】全流程。</div>
+                  <div class="feat-item"><span class="feat-icon">📜</span> <strong>原著出处</strong>：所有论据均严格锚定原著卷次与章节条目。</div>
+                </div>
+                <p class="welcome-hint">您可点击上方悬念推荐，或直接于下方题笔垂询。</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 底部输入框区 -->
+      <div class="chat-input-area">
+        <div class="input-box-wrapper">
+          <textarea 
+            id="chat-textarea" 
+            placeholder="探寻原著人物关系、恩怨因果、身世谜团... (Enter 发送，Shift+Enter 换行)" 
+            rows="2"
+          ></textarea>
+          <div class="input-actions">
+            <button class="send-btn" id="send-message-btn" title="提交考据">
+              <span class="btn-text">探问</span>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+            </button>
+          </div>
+        </div>
+        <div class="input-tip-bar">
+          <span>⚡ 按 Enter 发送 / Shift + Enter 换行</span>
+          <span>🔍 点击图谱中任意人物亦可一键生成专属考据提问</span>
+        </div>
+      </div>
+
+    </section>
+  </main>
+
+  <!-- JS 逻辑文件 -->
+  <script src="/static/js/graph.js?v=8"></script>
+  <script src="/static/js/app.js?v=5"></script>
+</body>
+</html>

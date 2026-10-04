@@ -84,11 +84,12 @@ venv.bak/
 ehthumbs.db
 Thumbs.db
 
-# Model files (usually large)
+# Model files (usually large) —— 注意: 不要用目录名 models/, 会误伤 models/ Python 包
 *.bin
 *.gguf
 *.safetensors
-models/
+*.pt
+*.onnx
 checkpoints/
 
 # Data files
@@ -112,3 +113,6 @@ secrets.json
 
 # Claude Code
 .claude/
+
+# Local tool state (Grok CLI workflows)
+.grok/

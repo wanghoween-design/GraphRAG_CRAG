@@ -21,7 +21,8 @@ def grader_node(state: GraphState) -> GraphState:
             **state,
             "is_sufficient": False,
             "confidence": 0.0,
-            "missing_info": "未检索到任何文档"
+            "missing_info": "未检索到任何文档",
+            "grader_reasoning": "本地双路召回为空: 图谱与向量检索均未命中"
         }
 
     # 准备评估内容（取前3个高分文档）
@@ -60,7 +61,8 @@ def grader_node(state: GraphState) -> GraphState:
             **state,
             "is_sufficient": result.is_sufficient,
             "confidence": result.confidence_score,
-            "missing_info": result.missing_info
+            "missing_info": result.missing_info,
+            "grader_reasoning": result.reasoning
         }
     except Exception as e:
         print(f"  [警告] Grader 解析失败: {e}")
@@ -69,5 +71,6 @@ def grader_node(state: GraphState) -> GraphState:
             **state,
             "is_sufficient": False,
             "confidence": 0.0,
-            "missing_info": f"评估解析失败: {e}"
+            "missing_info": f"评估解析失败: {e}",
+            "grader_reasoning": f"评估解析失败: {e}"
         }

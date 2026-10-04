@@ -48,8 +48,14 @@ def rerank_context(
         scores = reranker.compute_score(pairs, normalize=True)
 
     except Exception as e:
-        print(f"[Reranker] Error: {e}, falling back to original order")
-        return [{**ctx, "score": 0.0} for ctx in contexts]
+        # 精排失败时按原始召回顺序返回, 且不做阈值过滤——
+        # 若在此处返回 score=0.0 又被阈值清空, 会导致 Grader 永远判"不足"
+        # 而错误地级联触发 Rewrite/Web Search
+        print(f"[Reranker] Error: {e}, falling back to original order (no threshold)")
+        fallback = [{**ctx, "score": 0.0} for ctx in contexts]
+        if top_k is not None and top_k > 0:
+            fallback = fallback[:top_k]
+        return fallback
 
     # 组装结果
     scored_contexts = []
