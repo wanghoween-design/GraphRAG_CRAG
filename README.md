@@ -1,288 +1,251 @@
-# GraphRAG-CRAG: 基于知识图谱的矫正检索增强生成系统
+# 《庆余年》GraphRAG · CRAG 智能考据阁
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-1.0-green.svg)](https://github.com/langchain-ai/langgraph)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-teal.svg)](https://fastapi.tiangolo.com/)
+[![Neo4j](https://img.shields.io/badge/Neo4j-5.x-008CC1.svg)](https://neo4j.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-一个结合**知识图谱**与**向量检索**的智能问答系统，采用 **CRAG (Corrective RAG)** 架构实现检索质量的自动评估与矫正。
+以猫腻《庆余年》全书七卷（719 章）为语料，构建的**人物关系知识图谱 + 矫正检索增强生成（CRAG）智能问答系统**。
+左侧是一张可交互的势力关系星图，右侧是一位有据可查的"考据掌阁学士"——每个回答都展示完整的 CRAG 推演链路，并锚定真实原著章节。
 
-## 项目亮点
+![界面展示](docs/screenshot-ui.png)
 
-- **双路检索架构**: 同时利用 Neo4j 知识图谱和 FAISS 向量库进行信息检索
-- **CRAG 闭环流程**: 基于 LangGraph 实现 Retrieve-Grade-Recover 自动矫正机制
-- **智能查询改写**: 当检索结果不足时，自动改写查询并重新检索
-- **多轮对话记忆**: 支持上下文理解与指代消解
-- **联网搜索兜底**: 本地知识库穷尽后自动调用 Tavily 联网搜索
+## ✨ 功能特性
+
+### 🕸️ 交互式关系图谱
+- **防重叠环形布局**：主角居中、同阵营聚簇成色块，环容量按弦长公式计算，任意视图下节点**零重叠**（数值验证：核心 28 节点 / 全景 73 节点，最小间距余量 ≥ 29%）
+- **六大便服阵营染色**：范府世家 / 南庆皇廷 / 监察暗网 / 世外宗师与神庙 / 红颜与江湖 / 名城重镇与司部
+- **智能聚焦**：点击节点高亮邻居、点亮关系铭文，其余淡出；支持缩放、拖拽、搜索定位
+- **双密度视图**：宗师核心（28 人精粹）⇄ 原著全景（73 实体 / 198 连线），人数由实际数据动态计算
+
+### ⚡ 双引擎 CRAG 问答（自动切换）
+| | LangGraph 闭环引擎 | 离线规则引擎 |
+|---|---|---|
+| 触发条件 | Ollama 可达时自动启用 | Ollama 离线或管线异常时自动降级 |
+| 推理 | Ollama 本地 LLM（qwen3:4b） | 规则模板 + 图谱三元组合成 |
+| 检索 | FAISS 向量 + Neo4j 图谱双路召回 + bge-reranker 精排 | 图谱三元组 + 全书 719 章全语料关键词检索 |
+| 兜底 | 本地 2 轮改写重试 → Tavily 联网搜索 | 如实说明"未能定位章节"，绝不编造引用 |
+
+- **⚡ 直问直答**："范闲的母亲是谁？"这类事实型问题，直接从图谱三元组给出规范答案（**范闲的生母是 叶轻眉。**），附关系依据与真实章节引用
+- **🎭 多轮对话记忆**：LangGraph MemorySaver 按 session_id 保存会话，支持指代消解（"他的母亲是谁？"）
+- **📜 真实章节引用**：所有引用来自实际命中的章节，检索不到时如实说明
+- **🔍 推演全链路可视化**：每次回答展示 Memory → 双路召回 → Grader 置信度评估 → Rewrite/Web Search → Generate 全过程
+
+### 🧹 图谱数据清洗管线
+原始 LLM 抽取结果经过系统清洗后才允许入图：
+1. **名称归并**：别名/泛称映射到规范人名（晨儿→林婉儿、财政部→户部、皇家商号→内库…），每条映射均有章节证据
+2. **杂讯剔除**：泛称占位（一个儿子/中年人…）、家族集合名词（范家/叶家…）、抽取幻觉名自动过滤
+3. **错误三元组拦截**：与原著明显矛盾的抽取错误（如 皇太后-[生母]->林婉儿）不入图，并补上正确关系
+4. **边去重**：同（源，目标，关系类型）多章重复断言合并并累计权重
+5. **结果缓存**：TTL + 数据文件 mtime 感知，图谱查询 0ms 命中
 
 ## 系统架构
-<img width="854" height="539" alt="项目流程图" src="https://github.com/user-attachments/assets/9ae3437b-6a5b-4818-a1a8-8b05b84dea35" />
 
+```
+                        ┌─────────────────────────────────────┐
+                        │      FastAPI Web (web_server.py)    │
+                        │   /api/graph /api/chat /api/status  │
+                        └──────────────┬──────────────────────┘
+                                       │
+                     ┌─────────────────▼──────────────────┐
+                     │   WebCRAGService 双引擎统一门面      │
+                     │   (crag_service.py)                │
+                     └───────┬───────────────────┬────────┘
+              Ollama 可达     │                   │  Ollama 离线/失败
+                     ┌───────▼───────┐   ┌───────▼────────┐
+                     │ LangGraph CRAG│   │ 离线规则引擎    │
+                     │ Retrieve-Grade│   │ 图谱三元组 +    │
+                     │ -Recover 闭环  │   │ 719章全语料检索 │
+                     └───────┬───────┘   └───────┬────────┘
+                             │                   │
+        ┌────────┬───────────┼──────────┬────────┘
+        ▼        ▼           ▼          ▼
+   ┌────────┐┌────────┐┌──────────┐┌──────────────┐
+   │ Neo4j  ││ FAISS  ││ Ollama   ││ Tavily 兜底  │
+   │ 知识图谱││ 向量库  ││ qwen3:4b ││ 联网搜索     │
+   └────────┘└────────┘└──────────┘└──────────────┘
+```
+
+### CRAG 闭环流程（LangGraph 引擎）
+
+```
+Memory(指代消解/记忆召回) → Retrieve(双路召回+Rerank精排) → Grader(结构化质量评估)
+      ▲                                                        │
+      │                                     充足且置信>0.7 → Generate → UpdateMemory
+      │                                                        │
+      └────────── Rewrite(查询改写, 最多2轮) ◀─────────────────┘
+                                │ 仍不足
+                                ▼
+                          Web Search(Tavily 联网) → Generate
+```
 
 ## 技术栈
 
 | 组件 | 技术选型 | 说明 |
 |------|----------|------|
-| 图数据库 | Neo4j | 存储人物关系、地点等结构化知识 |
-| 向量数据库 | FAISS | 存储文档的向量表示，支持相似度检索 |
-| LLM 框架 | LangChain + LangGraph | 构建可编排的 LLM 应用 |
-| 本地 LLM | Ollama (Qwen3:4b) | 支持本地部署的大语言模型 |
-| Embedding | nomic-embed-text | 文本向量化模型 |
-| Reranker | BAAI/bge-reranker-v2-m3 | 检索结果重排序模型 |
-| 联网搜索 | Tavily API | 实时网络搜索服务 |
-
-## 项目结构
-
-```
-GraphRAG_CRAG/
-├── config.py                 # 配置文件（环境变量、模型名称等）
-├── main.py                   # 程序入口
-├── models/
-│   ├── __init__.py
-│   └── state.py              # LangGraph 状态定义、Pydantic 模型
-├── services/
-│   ├── __init__.py
-│   ├── vector_store.py       # FAISS 向量库服务
-│   ├── graph_service.py      # Neo4j 图数据库服务
-│   ├── reranker.py           # FlagReranker 重排序服务
-│   └── retriever.py          # 检索服务（向量+图谱双路召回）
-├── nodes/
-│   ├── __init__.py
-│   ├── grader_node.py        # 检索质量评估节点
-│   ├── rewrite_node.py       # 查询改写节点
-│   ├── generate_node.py      # 答案生成节点
-│   ├── web_search_node.py    # 联网搜索节点
-│   ├── memory_node.py        # 对话记忆节点
-│   └── router.py             # 条件路由（状态转移判断）
-├── graph/
-│   ├── __init__.py
-│   └── crag_graph.py         # CRAG 图构建
-├── requirements.txt          # 依赖清单
-├── .env.example              # 环境变量模板
-├── .gitignore
-└── README.md
-```
+| 图数据库 | Neo4j 5.x | 存储人物、势力、地点与关系三元组（Docker 部署） |
+| 向量数据库 | FAISS | 全书章节切片相似度检索 |
+| LLM 框架 | LangChain + LangGraph | CRAG 闭环编排、Pydantic V2 结构化输出 |
+| 本地 LLM | Ollama (qwen3:4b) | 记忆消解 / 质量评估 / 答案生成 |
+| Embedding | nomic-embed-text | 文本向量化 |
+| Reranker | BAAI/bge-reranker-v2-m3 | 召回结果精排 |
+| 联网搜索 | Tavily API | 本地知识穷尽后的兜底 |
+| Web 服务 | FastAPI + Uvicorn | REST API 与前端静态托管 |
+| 前端 | 原生 JS + SVG | 无依赖的力导关系图谱与考据界面 |
 
 ## 快速开始
 
-### 1. 环境准备
-
-#### 1.1 安装 Neo4j
+### 1. 启动 Neo4j（Docker 推荐）
 
 ```bash
-# Docker 方式（推荐）
-docker run -d \
-  --name neo4j \
+docker run -d --name neo4j-qyn \
   -p 7474:7474 -p 7687:7687 \
-  -e NEO4J_AUTH=neo4j/password \
-  neo4j:latest
-
-# 或下载桌面版: https://neo4j.com/download/
+  -v neo4j_qyn_data:/data \
+  -e NEO4J_AUTH=neo4j/你的密码 \
+  neo4j:5
 ```
 
-#### 1.2 安装 Ollama 并下载模型
+### 2. 安装 Ollama 并下载模型（可选）
+
+> **不装 Ollama 也能跑**：Web 问答会自动降级到离线规则引擎，图谱与直问直答功能完全可用。
 
 ```bash
-# 安装 Ollama
-# macOS/Linux: curl -fsSL https://ollama.com/install.sh | sh
-# Windows: https://ollama.com/download
-
-# 下载所需模型
-ollama pull qwen3:4b              # LLM 模型
-ollama pull nomic-embed-text      # Embedding 模型
-```
-
-### 2. 克隆项目
-
-```bash
-git clone https://github.com/your-username/GraphRAG-CRAG.git
-cd GraphRAG-CRAG
+ollama pull qwen3:4b              # LLM
+ollama pull nomic-embed-text      # Embedding
 ```
 
 ### 3. 安装依赖
 
 ```bash
-# 创建虚拟环境
-python -m venv .venv
-source .venv/bin/activate  # Linux/macOS
-# .venv\Scripts\activate   # Windows
+git clone https://github.com/wanghoween-design/GraphRAG_CRAG.git
+cd GraphRAG_CRAG
 
-# 安装依赖
+python -m venv .venv
+.venv\Scripts\activate            # Windows
+# source .venv/bin/activate       # Linux/macOS
+
 pip install -r requirements.txt
 ```
 
 ### 4. 配置环境变量
 
 ```bash
-# 复制模板
 cp .env.example .env
-
-# 编辑 .env 文件，填入你的配置
 ```
-
-`.env` 文件内容：
 
 ```env
-# Neo4j 配置
-NEO4J_URI=bolt://localhost:7687
+NEO4J_URI=neo4j://127.0.0.1:7687
 NEO4J_USERNAME=neo4j
-NEO4J_PASSWORD=your_password
-
-# Tavily API（联网搜索）
-TAVILY_API_KEY=your_tavily_api_key
+NEO4J_PASSWORD=你的密码
+TAVILY_API_KEY=你的_tavily_key     # 联网兜底用, https://tavily.com 免费申请
 ```
 
-> **获取 Tavily API Key**: 访问 https://tavily.com 注册并获取免费 API Key
+### 5. 准备数据（`data/` 目录）
 
-### 5. 准备数据
+| 路径 | 用途 | 必需 |
+|------|------|------|
+| `data/processed/chapters.json` | 全书 719 章正文（章节检索语料） | ✅ |
+| `data/graph/core_relations.json` | 高信度核心关系三元组（离线图谱） | ✅ |
+| `data/graph/registry.json` `name_index.json` | 实体注册表 / 人物名录 | ✅ |
+| `data/graph/chapter_batches.json` | 分批抽取计划（已完成章节自动截断） | 抽取用 |
+| `data/vector_store/qyn_faiss/` | FAISS 向量索引 | LangGraph 引擎用 |
 
-#### 5.1 向量数据库
-
-将你的 FAISS 向量库放置到 `data/vector_store/qyn_faiss/` 目录下。
-
-#### 5.2 知识图谱
-
-确保 Neo4j 中已导入相关知识图谱数据，并在 `data/graph/entity.json` 中维护实体列表。
-
-### 6. 运行
+### 6. 启动
 
 ```bash
-cd GraphRAG_CRAG
+# Windows 一键启动（自动打开浏览器）
+run_web.bat
+
+# 或手动
+python web_server.py
+# 访问 http://127.0.0.1:8000
+```
+
+命令行交互模式（LangGraph 闭环）：
+
+```bash
 python main.py
 ```
 
-## 核心模块说明
+## Web API
 
-### 1. 双路召回 (Dual Retrieval)
+| 接口 | 说明 |
+|------|------|
+| `GET /` | 考据阁前端界面 |
+| `GET /api/status` | 引擎状态、Neo4j/Ollama 连通性、图谱容量 |
+| `GET /api/graph` | 全量图谱（清洗后的节点/连线/阵营） |
+| `GET /api/character/{name}` | 人物深度秘档（关系网、语录、推荐追问），支持别名（`晨儿`→林婉儿） |
+| `POST /api/chat` | CRAG 问答：`{"question": "...", "session_id": "..."}` |
 
-```python
-# 同时进行向量检索和图谱检索
-def merge_retrievers(question: str, graph_service: GraphQueryService):
-    # 向量检索：从 FAISS 召回相关文档
-    text_results = retrieve_text_context(question, k=8)
-    
-    # 图谱检索：从 Neo4j 查询实体关系
-    graph_results = graph_service.query_graph_context(person_name)
-    
-    # 统一格式返回
-    return all_contexts
-```
-
-### 2. Rerank 精排
-
-使用 `BAAI/bge-reranker-v2-m3` 对召回结果进行相关性重排序：
-
-```python
-ranked = rerank_context(
-    question=question,
-    contexts=contexts,
-    top_k=5,        # 返回前5个最相关文档
-    threshold=0.3   # 过滤相关性低于0.3的结果
-)
-```
-
-### 3. Grader 质量评估
-
-使用 LLM 对检索结果进行结构化评估：
-
-```python
-class GraderOutput(BaseModel):
-    is_sufficient: bool      # 检索结果是否足够
-    confidence_score: float  # 置信度分数 (0-1)
-    missing_info: str        # 缺失的信息
-    reasoning: str           # 评估理由
-```
-
-### 4. CRAG 闭环流程
+## 项目结构
 
 ```
-检索 → 评估 → 充足? → 生成答案
-              ↓ 否
-         改写查询 → 重新检索 (最多2轮)
-              ↓ 仍不足
-         联网搜索 → 生成答案
+GraphRAG_CRAG/
+├── web_server.py             # FastAPI 服务（API + 前端托管 + 异步问答）
+├── crag_service.py           # 双引擎 CRAG 门面（LangGraph 桥接 / 离线规则引擎 / 直答）
+├── graph_data_provider.py    # 图谱数据清洗与归纳（归并/去杂讯/去重/缓存）
+├── run_web.bat               # Windows 一键启动脚本
+├── static/                   # 前端（无框架依赖）
+│   ├── index.html            # 考据阁界面
+│   ├── css/style.css         # 新中式暗色主题
+│   └── js/
+│       ├── app.js            # 界面控制器（问答/推演卡片/状态徽章）
+│       └── graph.js          # SVG 图谱引擎（防重叠布局/力导/聚焦）
+├── docs/screenshot-ui.png    # 界面截图
+├── config.py                 # 配置（环境变量、模型、路径锚定）
+├── main.py                   # 命令行交互入口（LangGraph 闭环）
+├── models/state.py           # LangGraph 状态与 Pydantic 模型
+├── services/
+│   ├── retriever.py          # 双路召回（FAISS + Neo4j，结构化上下文）
+│   ├── graph_service.py      # Neo4j 查询（带离线容错）
+│   ├── vector_store.py       # FAISS 加载
+│   └── reranker.py           # bge 精排（失败时安全降级）
+├── nodes/                    # LangGraph 节点
+│   ├── memory_node.py        # 指代消解 + 记忆更新
+│   ├── grader_node.py        # 结构化质量评估
+│   ├── rewrite_node.py       # 查询改写
+│   ├── web_search_node.py    # Tavily 联网兜底
+│   ├── generate_node.py      # 答案生成
+│   └── router.py             # 条件路由
+├── graph/crag_graph.py       # LangGraph 闭环图构建
+├── data -> 外部数据目录        # 语料/图谱数据（不入库，见上表）
+├── requirements.txt
+└── .env.example
 ```
 
-## API 参考
+## 图谱数据管线
 
-### GraphQueryService
+原著抽取采用**分批递进**方式（每章：正文 → 实体/关系/证据 → Cypher 入库）：
 
-```python
-from services import GraphQueryService
-
-service = GraphQueryService(uri, username, password)
-
-# 查询人物关系
-results = service.query_graph_context("范闲")
-# 返回: ["范闲的母亲是叶轻眉", "保护范闲的是五竹", ...]
-
-service.close()
+```
+719 章原文 (data/graph/chapter_text/NNNN.txt)
+   └─ 分批抽取 (chapter_batches.json, 已完成章节自动截断)
+        ├─ 实体注册表  registry.json (94 实体)
+        ├─ 章级关系    by_chapter/*.cypher (111 章)
+        └─ 核心关系    core_relations.json (102 条)
+             └─ graph_data_provider 清洗归纳 ──▶ 73 节点 / 198 连线 (零杂讯/零重复/零孤立)
 ```
 
-### 检索函数
-
-```python
-from services import retrieve_and_rerank
-
-# 完整检索流程：双路召回 + Rerank
-ranked = retrieve_and_rerank(question, graph_service)
-```
-
-### CRAG Graph
-
-```python
-from graph import build_crag_graph
-
-graph = build_crag_graph()
-result = graph.invoke(
-    {"question": "范闲的母亲是谁?"},
-    config={"configurable": {"thread_id": "session_1"}}
-)
-print(result["final_answer"])
-```
-
-## 性能优化建议
-
-1. **Reranker 懒加载**: 首次调用时才加载模型，避免启动慢
-2. **批量检索**: 向量检索设置 `k=8`，经 Rerank 后取 Top-5
-3. **迭代限制**: 本地检索最多2轮，避免无限循环
-4. **温度参数**: Grader 使用 `temperature=0.0` 保证评估稳定性
+当前抽取进度：**111 / 719 章**（第一至三卷开篇）。`chapter_batches.json` 已自动截断至第 111 章，后续章节可无缝续跑。
 
 ## 常见问题
 
-### Q: Reranker 模型下载慢？
+**Q: 不启动 Ollama / Neo4j 能用吗？**
+可以。Neo4j 离线时图谱走本地 JSON 高信度数据；Ollama 离线时问答走离线规则引擎，直问直答与全书章节引用均正常。顶部状态徽章会如实显示当前模式。
 
+**Q: Reranker 模型下载慢？**
 ```bash
-# 使用镜像站
 export HF_ENDPOINT=https://hf-mirror.com
 ```
 
-### Q: Ollama 连接失败？
-
+**Q: Neo4j 连接失败？**
 ```bash
-# 确保 Ollama 服务已启动
-ollama serve
-
-# 检查模型是否已下载
-ollama list
+docker start neo4j-qyn   # 或检查 .env 中的 URI/账号密码
 ```
 
-### Q: Neo4j 连接超时？
-
-检查防火墙设置，确保 7687 端口开放：
-```bash
-# 测试连接
-python -c "from neo4j import GraphDatabase; d=GraphDatabase.driver('bolt://localhost:7687', auth=('neo4j','password')); d.verify_connectivity()"
-```
-
-## 贡献指南
-
-欢迎提交 Issue 和 Pull Request！
-
-1. Fork 本仓库
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 提交 Pull Request
+**Q: 回答里的章节引用可靠吗？**
+可靠。引用一律来自检索实际命中的章节（标题加权 + 正文词频 + 关键词匹配），无命中时明确提示"未能定位章节"，不存在编造引用。
 
 ## 许可证
 
@@ -290,11 +253,12 @@ python -c "from neo4j import GraphDatabase; d=GraphDatabase.driver('bolt://local
 
 ## 致谢
 
-- [LangChain](https://github.com/langchain-ai/langchain) - LLM 应用框架
-- [LangGraph](https://github.com/langchain-ai/langgraph) - 状态图编排
-- [FlagEmbedding](https://github.com/FlagOpen/FlagEmbedding) - Reranker 模型
-- [Tavily](https://tavily.com/) - AI 搜索 API
+- [LangChain / LangGraph](https://github.com/langchain-ai/langgraph) - CRAG 闭环编排
+- [Neo4j](https://neo4j.com/) - 图数据库
+- [FlagEmbedding](https://github.com/FlagOpen/FlagEmbedding) - Reranker
+- [Tavily](https://tavily.com/) - 联网搜索
+- 猫腻 - 《庆余年》原著
 
 ---
 
-**Star 本项目以支持开发!**
+**如果这个项目对你有帮助，欢迎 Star 支持！**
